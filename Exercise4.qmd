@@ -1,0 +1,306 @@
+---
+title: "Untitled"
+format: html
+---
+
+#Demo
+```{r}
+library("readr")
+library("dplyr")
+library("sf")
+library('ggplot2')
+
+
+wildschwein <- read_delim("Datasets-20240517/wildschwein_BE_2056.csv", ",")
+
+# Careful! What Timezone is assumed?
+sabi <- wildschwein |>
+  st_as_sf(coords = c("E", "N"), crs = 2056, remove = FALSE) |>
+  filter(TierName == "Sabi", DatetimeUTC >= "2015-07-01", DatetimeUTC < "2015-07-03")
+
+
+
+## Step A & b)
+
+distance_by_element <- function(later, now) {
+  as.numeric(
+    st_distance(later, now, by_element = TRUE)
+  )
+}
+
+sabi <- sabi |>
+  mutate(
+    nMinus2 = distance_by_element(lag(geometry, 2), geometry),  # distance to pos -30 minutes
+    nMinus1 = distance_by_element(lag(geometry, 1), geometry),  # distance to pos -15 minutes
+    nPlus1  = distance_by_element(geometry, lead(geometry, 1)), # distance to pos +15 mintues
+    nPlus2  = distance_by_element(geometry, lead(geometry, 2))  # distance to pos +30 minutes
+  )
+
+sabi <- sabi |>
+  rowwise() |>
+  mutate(
+    stepMean = mean(c(nMinus2, nMinus1, nPlus1, nPlus2))
+  ) |>
+  ungroup()
+
+sabi
+
+
+
+## step c) 
+
+sabi <- sabi |>
+  mutate(static = stepMean < mean(stepMean, na.rm = TRUE))
+
+sabi_filter <- sabi |>
+  filter(!static)
+
+sabi_filter |>
+  ggplot(aes(E, N)) +
+  geom_path() +
+  geom_point() +
+  coord_fixed() +
+  theme(legend.position = "bottom")
+
+
+```
+
+
+
+# Preperation
+```{r}
+
+# Import  data
+my_movement <- read_csv("../../Projektarbeit/R/PatTre/data/csv/export_path.csv")
+
+str(my_movement)
+
+# Convert to sf object and use CRS EPSG 2056
+my_movement_sf <- st_as_sf(my_movement, coords = c("Longitude_LV95", "Latitude_LV95"), crs = 2056, remove = FALSE)
+
+# Extract coordinates 
+coordinates <- st_coordinates(my_movement_sf)
+my_movement_sf2 <- cbind(my_movement_sf, coordinates)
+
+# choose day
+single_day <- my_movement_sf2 %>%
+  filter(as.Date(Time_Point) == as.Date("2024-04-15"))
+
+```
+
+
+# Task 1: Segmentation
+```{r}
+
+## step a & b)
+
+# Define a function to calculate Euclidean distances by element
+distance_by_element <- function(later, now) {
+  as.numeric(
+    st_distance(later, now, by_element = TRUE)
+  )
+}
+
+# Apply the segmentation algorithm
+single_day_segments <- single_day %>%
+  mutate(
+    nMinus2 = distance_by_element(lag(geometry, 2), geometry),  # distance to pos -30 minutes
+    nMinus1 = distance_by_element(lag(geometry, 1), geometry),  # distance to pos -15 minutes
+    nPlus1  = distance_by_element(geometry, lead(geometry, 1)), # distance to pos +15 minutes
+    nPlus2  = distance_by_element(geometry, lead(geometry, 2))  # distance to pos +30 minutes
+  ) %>%
+  rowwise() %>%
+  mutate(
+    stepMean = mean(c(nMinus2, nMinus1, nPlus1, nPlus2), na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+
+## step c) 
+
+single_day_segments2 <- single_day_segments %>%
+  mutate(static = stepMean < mean(stepMean, na.rm = TRUE))
+
+# filter out the static points
+single_day_segments2_ostatic <- single_day_segments2 %>%
+  filter(!static)
+
+# Plot
+single_day_segments2_ostatic %>%
+  ggplot(aes(X, Y)) + # Use X and Y columns from st_coordinates
+  geom_path() +
+  geom_point() +
+  coord_fixed() + 
+  theme(legend.position = "bottom")
+
+```
+
+
+# Task 2: Specify and apply threshold d
+```{r}
+
+
+# look at stepMean 
+hist(single_day_segments2_ostatic$stepMean, main = "Histogram of stepMean", xlab = "stepMean")
+
+boxplot(single_day_segments2_ostatic$stepMean, main = "Boxplot of stepMean")
+
+summary(single_day_segments2_ostatic$stepMean)
+
+
+# threshold =  mean of stepmean
+threshold <- mean(single_day_segments2_ostatic$stepMean, na.rm = TRUE)
+
+# new column static if stepmean is smaller than threshold
+single_day_segments2_threshold <- single_day_segments2_ostatic %>%
+  mutate(static = stepMean < threshold)
+
+
+# Filter out the static points
+single_day_segments2_ostatic2 <- single_day_segments2_threshold %>%
+  filter(!static)
+
+# Plot
+single_day_segments2_ostatic2 %>%
+  ggplot(aes(X, Y)) + # Use X and Y columns from st_coordinates
+  geom_path() +
+  geom_point() +
+  coord_fixed() +
+  theme(legend.position = "bottom")
+
+
+```
+
+
+# Task 3: Visualize segmented trajectories
+```{r}
+
+
+# Plot with colour = static (movements or not)
+single_day_segments2_ostatic2 %>%
+  ggplot(aes(X, Y, colour = static)) +
+  geom_path() +
+  geom_point() +
+  coord_fixed() +
+  labs(title = "Segmented Trajectories", x = "Longitude", y = "Latitude", colour = "Static") +
+  theme_minimal()
+
+
+```
+
+
+# Task 4: Segment-based analysis
+```{r}
+
+# function for unique values
+rle_id <- function(vec) {
+  x <- rle(vec)$lengths
+  as.factor(rep(seq_along(x), times = x))
+}
+
+# to assign unique IDs to subtrajectories
+single_day_segments2_ID <- single_day_segments2_ostatic2 %>%
+  mutate(segment_id = rle_id(static))
+
+# Plot by segment ID
+single_day_segments2_ID %>%
+  ggplot(aes(X, Y, colour = segment_id)) +
+  geom_path() +
+  geom_point() +
+  coord_fixed()  +
+  theme_minimal()
+
+# remove short segments 
+single_day_segments2_ID_oshort <- single_day_segments2_ID %>%
+  group_by(segment_id) %>%
+  mutate(duration = difftime(max(Time_Point), min(Time_Point), units = "mins")) %>%
+  ungroup() %>%
+  filter(duration >= 5)
+
+# Plot
+single_day_segments2_ID_oshort %>%
+  ggplot(aes(X, Y, colour = segment_id)) +
+  geom_path() +
+  geom_point() +
+  coord_fixed() +
+  theme_minimal()
+
+
+```
+
+
+
+# Task 5: Similarity measures
+```{r}
+
+# Import pedestrian
+pedestrian <- read_csv("Datasets-20240517/pedestrian.csv")
+
+str(pedestrian)
+
+# Convert to sf and use CRS EPSG 2056
+pedestrian_sf <- st_as_sf(pedestrian, coords = c("E", "N"), crs = 2056, remove = FALSE)
+
+# Plot
+ggplot(pedestrian_sf, aes(x = st_coordinates(pedestrian_sf)[,1], y = st_coordinates(pedestrian_sf)[,2], colour = as.factor(TrajID))) +
+  geom_path() +
+  geom_point() +
+  coord_fixed() +
+  labs(title = "Visual comparison of the 6 trajectories", x = "Longitude", y = "Latitude", colour = "Traj_ID") +
+  theme_minimal() +
+  facet_grid(.~ TrajID)
+
+
+```
+
+
+# Task 6: Calculate similarity
+```{r}
+#install/load libraries
+# install.packages("SimilarityMeasures")
+library(SimilarityMeasures)
+library(reshape2)
+
+help(package = "SimilarityMeasures")
+
+# trajectories extraction
+trajectories <- split(pedestrian_sf, pedestrian_sf$TrajID)
+
+#  trajectories to matrices
+trajectory_matrices <- lapply(trajectories, function(traj) {
+  as.matrix(st_coordinates(traj))
+})
+
+# Compare trajectory 1 to  2-6.
+#Using those similarity measures:  DTW, EditDist, Frechet and LCSS 
+trajectory_1 <- trajectory_matrices[[1]]
+
+similarity_results <- data.frame(
+  TrajID = 2:6,
+  DTW = sapply(2:6, function(i) DTW(trajectory_1, trajectory_matrices[[i]])),
+  EditDist = sapply(2:6, function(i) EditDist(trajectory_1, trajectory_matrices[[i]])),
+  Frechet = sapply(2:6, function(i) Frechet(trajectory_1, trajectory_matrices[[i]])),
+  LCSS = sapply(2:6, function(i) LCSS(trajectory_1, trajectory_matrices[[i]], pointSpacing = 1, pointDistance = 5, errorMarg = 2))
+)
+
+
+
+# Transformation von breit zu lang
+
+library("tidyr")
+similarity_longer <- similarity_results %>%
+  pivot_longer(cols = -TrajID, names_to = "measures", values_to = "value")
+
+
+
+#Plot
+ggplot(similarity_melted, aes(x = TrajID, y = value, fill = TrajID)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Computed similarities using different measure", x = "Coparison Trajectory", y = "Value", fill = "TrajID") +
+  theme_minimal() +
+  facet_grid( . ~ measures)
+
+
+
+```
+
